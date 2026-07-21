@@ -32,7 +32,8 @@
 
     .btn-submit { background-color: #ff4757; color: white; border: none; padding: 15px 30px; font-size: 22px; font-weight: bold; border-radius: 10px; cursor: pointer; width: 100%; box-shadow: 0 4px 10px rgba(255, 71, 87, 0.4); margin-top: 15px; }
     .btn-submit:disabled { background: #b2bec3; box-shadow: none; cursor: not-allowed; }
-    .user-info { background: #e3f2fd; color: #0d47a1; padding: 10px; border-radius: 8px; margin: 15px 0; font-weight: bold; }
+    .user-info { background: #e3f2fd; color: #0d47a1; padding: 10px; border-radius: 8px; margin: 15px 0; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+    .btn-logout { background: #ff7675; color: white; border: none; padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -54,7 +55,10 @@
       <div class="g_id_signin" data-type="standard"></div>
     </div>
 
-    <div id="user-profile" class="user-info" style="display: none;"></div>
+    <div id="user-profile" class="user-info" style="display: none;">
+      <span id="user-profile-text"></span>
+      <button class="btn-logout" onclick="logout()">登出</button>
+    </div>
 
     <div id="session-selector" class="session-container">
       <h3 style="margin-top:0; color:#333;">📅 場次清單：</h3>
@@ -67,19 +71,60 @@
   <script>
     let selectedSession = null;
     let currentUserEmail = null;
-    let userToken = null; // 儲存 Google 回傳的 JWT Token
+    let userToken = null;
+    let pollInterval = null; // 背景自動更新的定時器
+
+    // 頁面載入時檢查是否有儲存的 Token
+    window.onload = function() {
+      const savedToken = localStorage.getItem('pickleball_token');
+      if (savedToken) {
+        try {
+          const payload = parseJwt(savedToken);
+          // 檢查 Token 是否過期 (Exp 時間)
+          if (payload.exp * 1000 > Date.now()) {
+            userToken = savedToken;
+            currentUserEmail = payload.email;
+            showLoggedInState(payload.name, currentUserEmail);
+            loadSessions();
+            startPolling(); // 啟動自動更新
+          } else {
+            localStorage.removeItem('pickleball_token'); // 已過期，清除
+          }
+        } catch (e) {
+          localStorage.removeItem('pickleball_token');
+        }
+      }
+    };
 
     function handleCredentialResponse(response) {
-      userToken = response.credential; // 保存原始 Token 用於傳送至後端驗證
+      userToken = response.credential;
+      localStorage.setItem('pickleball_token', userToken); // 儲存登入狀態至 localStorage
+      
       const responsePayload = parseJwt(response.credential);
       currentUserEmail = responsePayload.email;
 
+      showLoggedInState(responsePayload.name, currentUserEmail);
+      loadSessions();
+      startPolling(); // 啟動背景自動更新
+    }
+
+    function showLoggedInState(name, email) {
       document.getElementById('auth-box').style.display = 'none';
       const profileBox = document.getElementById('user-profile');
-      profileBox.style.display = 'block';
-      profileBox.innerText = `👤 認證會員：${responsePayload.name} (${currentUserEmail})`;
+      profileBox.style.display = 'flex';
+      document.getElementById('user-profile-text').innerText = `👤 ${name} (${email})`;
+    }
 
-      loadSessions();
+    function logout() {
+      localStorage.removeItem('pickleball_token');
+      location.reload(); // 重新載入頁面重置狀態
+    }
+
+    // 開啟每 3 秒自動更新名額機制
+    function startPolling() {
+      if (!pollInterval) {
+        pollInterval = setInterval(loadSessions, 3000);
+      }
     }
 
     function parseJwt(token) {
@@ -125,6 +170,11 @@
             btn.disabled = true;
           }
           btnContainer.appendChild(btn);
+
+          // 如果目前選中的就是這個場次，即時更新頂部的剩餘數字
+          if (selectedSession && selectedSession.id === s.id) {
+            document.getElementById('seats').innerText = s.remainingSeats;
+          }
         });
       } catch (err) {
         document.getElementById('session-buttons').innerText = '❌ 無法連線至伺服器';
@@ -145,7 +195,7 @@
       if (!selectedSession || !userToken) return;
 
       const grabBtn = document.getElementById('btn-grab');
-      grabBtn.disabled = true; // 防止連續點擊
+      grabBtn.disabled = true;
 
       try {
         const res = await fetch('/api/grab', {
@@ -153,7 +203,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sessionId: selectedSession.id,
-            token: userToken // 安全優化：發送完整的 Google Token 供後端驗證
+            token: userToken
           })
         });
 
@@ -161,7 +211,6 @@
         alert(result.message);
 
         if (result.success) {
-          document.getElementById('seats').innerText = result.remainingSeats;
           loadSessions();
         } else {
           grabBtn.disabled = false;

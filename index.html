@@ -67,8 +67,10 @@
   <script>
     let selectedSession = null;
     let currentUserEmail = null;
+    let userToken = null; // 儲存 Google 回傳的 JWT Token
 
     function handleCredentialResponse(response) {
+      userToken = response.credential; // 保存原始 Token 用於傳送至後端驗證
       const responsePayload = parseJwt(response.credential);
       currentUserEmail = responsePayload.email;
 
@@ -140,23 +142,33 @@
     }
 
     async function startGrab() {
-      if (!selectedSession || !currentUserEmail) return;
+      if (!selectedSession || !userToken) return;
 
-      const res = await fetch('/api/grab', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: selectedSession.id,
-          userEmail: currentUserEmail  /* 恢復為原本相容後端的參數 */
-        })
-      });
+      const grabBtn = document.getElementById('btn-grab');
+      grabBtn.disabled = true; // 防止連續點擊
 
-      const result = await res.json();
-      alert(result.message);
+      try {
+        const res = await fetch('/api/grab', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: selectedSession.id,
+            token: userToken // 安全優化：發送完整的 Google Token 供後端驗證
+          })
+        });
 
-      if (result.success) {
-        document.getElementById('seats').innerText = result.remainingSeats;
-        loadSessions();
+        const result = await res.json();
+        alert(result.message);
+
+        if (result.success) {
+          document.getElementById('seats').innerText = result.remainingSeats;
+          loadSessions();
+        } else {
+          grabBtn.disabled = false;
+        }
+      } catch (err) {
+        alert('❌ 送出失敗，請確認網路連線。');
+        grabBtn.disabled = false;
       }
     }
   </script>

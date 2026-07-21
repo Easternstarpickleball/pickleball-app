@@ -1,12 +1,25 @@
 const express = require('express');
 const path = require('path');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
-const { JWT } = require('google-auth-library');
+const { JWT, OAuth2Client } = require('google-auth-library');
+const rateLimit = require('express-rate-limit');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// 設定 Google OAuth 驗證客戶端
+const GOOGLE_CLIENT_ID = '329337408769-4omaa4c4877335iv5thus8npk64bjbag.apps.googleusercontent.com';
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '/')));
+
+// API 頻率限制：防範惡意腳本與自動刷單（限制每個 IP 1 分鐘內最多 10 次搶位）
+const grabLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { success: false, message: "⚠️ 請求過於頻繁，請稍微等待後再試！" }
+});
 
 // 💡 1. 設定兩個獨立的 Google 試算表 ID
 const MEMBER_SPREADSHEET_ID = '1j-KMHvmPIuIziymLE_85G6gCbrZyHzj9CgQeevjels0'; // 只用來讀取姓名
@@ -25,7 +38,6 @@ const waitlistCache = { tue: 0, thu: 0, sat: 0 };
 const registeredEmails = { tue: new Set(), thu: new Set(), sat: new Set() };
 
 // 🔑 取得指定的 Google 試算表物件
-
 async function getGoogleDoc(spreadsheetId) {
   let creds;
   if (process.env.GOOGLE_JSON_KEY) {
@@ -116,6 +128,28 @@ async function saveToGoogleSheet(dateStr, userEmail, status) {
   }
 }
 
+// ⏳ 高並發防護：非同步寫入佇列 (Queue)，防止觸發 Google API 寫入限制 (429 Too Many Requests)
+const writeQueue = [];
+let isProcessingQueue = false;
+
+async function processQueue() {
+  if (isProcessingQueue || writeQueue.length === 0) return;
+  isProcessingQueue = true;
+
+  const task = writeQueue.shift();
+  try {
+    await saveToGoogleSheet(task.dateStr, task.cleanEmail, task.statusText);
+  } catch (err) {
+    console.error('❌ 寫入佇列處理失敗：', err.message);
+  }
+
+  // 設定 300ms 間隔，防止並發寫入破壞 API 限額
+  setTimeout(() => {
+    isProcessingQueue = false;
+    processQueue();
+  }, 300);
+}
+
 // 計算活動日期的輔助函式
 function getSessionTargetDate(dayOfWeekTarget) {
   const today = new Date();
@@ -147,19 +181,37 @@ app.get('/api/sessions', (req, res) => {
   res.json(result);
 });
 
-// API: 搶位與候補接口
-app.post('/api/grab', async (req, res) => {
-  const { sessionId, userEmail } = req.body;
+// API: 搶位與候補接口（加入 Rate Limit 與安全驗證）
+app.post('/api/grab', grabLimiter, async (req, res) => {
+  const { sessionId, token } = req.body;
 
-  if (!sessionId || !userEmail) {
-    return res.status(400).json({ success: false, message: "請填寫 Email！" });
+  if (!sessionId || !token) {
+    return res.status(400).json({ success: false, message: "無效的請求參數！" });
+  }
+
+  // 1. 安全優化：後端驗證 Google ID Token，防止前端偽造 Email
+  let userEmail = '';
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken: token,
+      audience: GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    userEmail = payload.email;
+  } catch (err) {
+    return res.status(401).json({ success: false, message: "❌ 會員身份驗證失敗或過期，請重新登入！" });
   }
 
   const cleanEmail = userEmail.trim().toLowerCase();
   const targetSession = sessions.find(s => s.id === sessionId);
+
+  if (!targetSession) {
+    return res.status(400).json({ success: false, message: "❌ 找不到指定場次！" });
+  }
+
   const dateStr = getSessionTargetDate(targetSession.day);
 
-  // 1. 防重檢查
+  // 2. 防重複報名檢查
   if (registeredEmails[sessionId] && registeredEmails[sessionId].has(cleanEmail)) {
     return res.json({ success: false, message: "❌ 您已經報名過此場次囉！請勿重複送出。" });
   }
@@ -168,7 +220,7 @@ app.post('/api/grab', async (req, res) => {
   let isSuccess = false;
   let resMessage = '';
 
-  // 2. 判斷正取或候補
+  // 3. 判斷正取或候補
   if (seatsCache[sessionId] > 0) {
     seatsCache[sessionId] -= 1;
     registeredEmails[sessionId].add(cleanEmail);
@@ -185,8 +237,9 @@ app.post('/api/grab', async (req, res) => {
     return res.json({ success: false, message: "❌ 額滿了！正取與候補名額皆已售罄！" });
   }
 
-  // 3. 異步處理：從會員表比對姓名 $\rightarrow$ 寫入報名表
-  saveToGoogleSheet(dateStr, cleanEmail, statusText);
+  // 4. 推入寫入佇列處理（非同步排隊寫入 Google Sheet）
+  writeQueue.push({ dateStr, cleanEmail, statusText });
+  processQueue();
 
   res.json({ 
     success: isSuccess, 

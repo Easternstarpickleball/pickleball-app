@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '/')));
 
-// 💡 1. 你的 Google 試算表 ID (填入你試算表網址裡的那串字)
+// 💡 1. 你的 Google 試算表 ID
 const SPREADSHEET_ID = '1j-KMHvmPIuIziymLE_85G6gCbrZyHzj9CgQeevjels0';
 
 // 💡 2. 球敘場次設定 (2: 週二, 4: 週四, 6: 週六)
@@ -37,7 +37,7 @@ async function getGoogleDoc() {
 }
 
 // 📊 試算表管理邏輯：自動新建分頁與隱藏舊分頁
-async function saveToGoogleSheet(dateStr, userName, userEmail, status) {
+async function saveToGoogleSheet(dateStr, userEmail, status) {
   try {
     const doc = await getGoogleDoc();
     
@@ -46,7 +46,7 @@ async function saveToGoogleSheet(dateStr, userName, userEmail, status) {
     if (!sheet) {
       sheet = await doc.addSheet({ 
         title: dateStr, 
-        headerValues: ['報名時間', '姓名/暱稱', 'Gmail 帳號', '報名狀態'] 
+        headerValues: ['報名時間', 'Gmail 帳號', '報名狀態'] 
       });
     }
 
@@ -54,7 +54,6 @@ async function saveToGoogleSheet(dateStr, userName, userEmail, status) {
     const nowStr = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
     await sheet.addRow({
       '報名時間': nowStr,
-      '姓名/暱稱': userName,
       'Gmail 帳號': userEmail,
       '報名狀態': status
     });
@@ -108,12 +107,12 @@ app.get('/api/sessions', (req, res) => {
   res.json(result);
 });
 
-// API: 搶位與候補接口
+// API: 搶位與候補接口 (只檢查 sessionId 與 userEmail)
 app.post('/api/grab', async (req, res) => {
-  const { sessionId, userName, userEmail } = req.body;
+  const { sessionId, userEmail } = req.body;
 
-  if (!sessionId || !userName || !userEmail) {
-    return res.status(400).json({ success: false, message: "請填寫完整資訊（姓名與 Email）！" });
+  if (!sessionId || !userEmail) {
+    return res.status(400).json({ success: false, message: "請填寫 Email！" });
   }
 
   const cleanEmail = userEmail.trim().toLowerCase();
@@ -147,7 +146,7 @@ app.post('/api/grab', async (req, res) => {
   }
 
   // 3. 異步寫入 Google 試算表
-  saveToGoogleSheet(dateStr, userName, cleanEmail, statusText);
+  saveToGoogleSheet(dateStr, cleanEmail, statusText);
 
   res.json({ success: isSuccess, message: resMessage });
 });

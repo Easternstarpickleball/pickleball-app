@@ -72,23 +72,22 @@
     let selectedSession = null;
     let currentUserEmail = null;
     let userToken = null;
-    let pollInterval = null; // 背景自動更新的定時器
+    let pollInterval = null;
 
-    // 頁面載入時檢查是否有儲存的 Token
+    // 頁面載入時自動檢查歷史登入 Token
     window.onload = function() {
       const savedToken = localStorage.getItem('pickleball_token');
       if (savedToken) {
         try {
           const payload = parseJwt(savedToken);
-          // 檢查 Token 是否過期 (Exp 時間)
           if (payload.exp * 1000 > Date.now()) {
             userToken = savedToken;
             currentUserEmail = payload.email;
             showLoggedInState(payload.name, currentUserEmail);
             loadSessions();
-            startPolling(); // 啟動自動更新
+            startPolling();
           } else {
-            localStorage.removeItem('pickleball_token'); // 已過期，清除
+            localStorage.removeItem('pickleball_token');
           }
         } catch (e) {
           localStorage.removeItem('pickleball_token');
@@ -98,14 +97,14 @@
 
     function handleCredentialResponse(response) {
       userToken = response.credential;
-      localStorage.setItem('pickleball_token', userToken); // 儲存登入狀態至 localStorage
+      localStorage.setItem('pickleball_token', userToken);
       
       const responsePayload = parseJwt(response.credential);
       currentUserEmail = responsePayload.email;
 
       showLoggedInState(responsePayload.name, currentUserEmail);
       loadSessions();
-      startPolling(); // 啟動背景自動更新
+      startPolling();
     }
 
     function showLoggedInState(name, email) {
@@ -117,10 +116,10 @@
 
     function logout() {
       localStorage.removeItem('pickleball_token');
-      location.reload(); // 重新載入頁面重置狀態
+      location.reload();
     }
 
-    // 開啟每 3 秒自動更新名額機制
+    // 每 3 秒自動更新背景狀態與剩餘名額
     function startPolling() {
       if (!pollInterval) {
         pollInterval = setInterval(loadSessions, 3000);
@@ -150,7 +149,8 @@
 
     async function loadSessions() {
       try {
-        const res = await fetch('/api/sessions');
+        const url = userToken ? `/api/sessions?token=${encodeURIComponent(userToken)}` : '/api/sessions';
+        const res = await fetch(url);
         const sessions = await res.json();
         
         const btnContainer = document.getElementById('session-buttons');
@@ -171,7 +171,6 @@
           }
           btnContainer.appendChild(btn);
 
-          // 如果目前選中的就是這個場次，即時更新頂部的剩餘數字
           if (selectedSession && selectedSession.id === s.id) {
             document.getElementById('seats').innerText = s.remainingSeats;
           }

@@ -13,7 +13,7 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '/')));
 
-// API 頻率限制（防刷單）
+// API 頻率限制
 const grabLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -53,7 +53,7 @@ async function getGoogleDoc(spreadsheetId) {
   return doc;
 }
 
-// 🔍 搜尋會員資料庫：檢查是否為會員
+// 🔍 搜尋會員資料庫：比對是否為會員
 async function checkMemberStatus(userEmail) {
   try {
     const doc = await getGoogleDoc(MEMBER_SPREADSHEET_ID);
@@ -119,6 +119,7 @@ async function saveToGoogleSheet(dateStr, userEmail, userName, status) {
   }
 }
 
+// 防爆寫入佇列 (Queue)
 const writeQueue = [];
 let isProcessingQueue = false;
 
@@ -154,26 +155,49 @@ function formatDateStr(dateObj) {
   return `${dateObj.getFullYear()}-${dateObj.getMonth() + 1}-${dateObj.getDate()}`;
 }
 
-// API: 取得當前場次與動態時間解鎖狀態
-app.get('/api/sessions', (req, res) => {
+// API: 取得當前場次（動態顯示會員/非會員開放時間）
+app.get('/api/sessions', async (req, res) => {
   const now = new Date();
+  const token = req.query.token;
+
+  let isMember = false;
+
+  if (token) {
+    try {
+      const ticket = await googleClient.verifyIdToken({
+        idToken: token,
+        audience: GOOGLE_CLIENT_ID,
+      });
+      const payload = ticket.getPayload();
+      const memberStatus = await checkMemberStatus(payload.email);
+      isMember = memberStatus.isMember;
+    } catch (e) {
+      isMember = false;
+    }
+  }
 
   const result = sessions.map(s => {
     const targetDateObj = getSessionTargetDateObj(s.day);
     const dateStr = formatDateStr(targetDateObj);
     const displayDate = `${targetDateObj.getMonth() + 1}/${targetDateObj.getDate()}`;
 
-    // 💡 設定會員開放時間：球敘前一天的 18:00 (晚上 6 點)
+    // 會員開放時間：前一天 18:00
     const memberOpenTime = new Date(targetDateObj);
     memberOpenTime.setDate(targetDateObj.getDate() - 1);
     memberOpenTime.setHours(18, 0, 0, 0);
 
-    // 只要到了 18:00 就對外解鎖（因為會員可以點擊了）
-    const isOpen = now >= memberOpenTime;
+    // 非會員開放時間：前一天 22:00
+    const nonMemberOpenTime = new Date(targetDateObj);
+    nonMemberOpenTime.setDate(targetDateObj.getDate() - 1);
+    nonMemberOpenTime.setHours(22, 0, 0, 0);
 
-    const openMonth = memberOpenTime.getMonth() + 1;
-    const openDay = memberOpenTime.getDate();
-    const openTimeStr = `${openMonth}/${openDay} 18:00`;
+    const userOpenTime = isMember ? memberOpenTime : nonMemberOpenTime;
+    const isOpen = now >= userOpenTime;
+
+    const openMonth = userOpenTime.getMonth() + 1;
+    const openDay = userOpenTime.getDate();
+    const openHour = isMember ? "18:00" : "22:00";
+    const openTimeStr = `${openMonth}/${openDay} ${openHour}`;
 
     return {
       ...s,
@@ -185,10 +209,11 @@ app.get('/api/sessions', (req, res) => {
       waitlistCount: waitlistCache[s.id]
     };
   });
+
   res.json(result);
 });
 
-// API: 搶位與候補接口（含階梯式時間權限驗證）
+// API: 搶位與候補接口
 app.post('/api/grab', grabLimiter, async (req, res) => {
   const { sessionId, token } = req.body;
 
@@ -219,28 +244,23 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
   const targetDateObj = getSessionTargetDateObj(targetSession.day);
   const dateStr = formatDateStr(targetDateObj);
 
-  // ⏰ 2. 計算關鍵時間點
+  // ⏰ 2. 判斷階梯式開放時間
   const now = new Date();
 
-  // 會員開放時間：前一天 18:00
   const memberOpenTime = new Date(targetDateObj);
   memberOpenTime.setDate(targetDateObj.getDate() - 1);
   memberOpenTime.setHours(18, 0, 0, 0);
 
-  // 非會員開放時間：前一天 22:00
   const nonMemberOpenTime = new Date(targetDateObj);
   nonMemberOpenTime.setDate(targetDateObj.getDate() - 1);
   nonMemberOpenTime.setHours(22, 0, 0, 0);
 
-  // 檢查是否已到會員開放時間
   if (now < memberOpenTime) {
     return res.json({ success: false, message: "🔒 此場次尚未開放報名！" });
   }
 
-  // 檢查會員資格
   const memberStatus = await checkMemberStatus(cleanEmail);
 
-  // 如果時間在「18:00 ~ 22:00 之間」且「不是會員」，則拒絕
   if (now < nonMemberOpenTime && !memberStatus.isMember) {
     return res.json({ 
       success: false, 
@@ -257,7 +277,7 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
   let isSuccess = false;
   let resMessage = '';
 
-  // 4. 正取 / 候補邏輯
+  // 4. 正取 / 候補扣名額邏輯
   if (seatsCache[sessionId] > 0) {
     seatsCache[sessionId] -= 1;
     registeredEmails[sessionId].add(cleanEmail);
@@ -274,7 +294,7 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
     return res.json({ success: false, message: "❌ 額滿了！正取與候補名額皆已售罄！" });
   }
 
-  // 5. 非同步排隊寫入 Google Sheet
+  // 5. 排隊非同步寫入 Google Sheet
   writeQueue.push({ dateStr, cleanEmail, userName: memberStatus.name, statusText });
   processQueue();
 

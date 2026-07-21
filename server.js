@@ -24,13 +24,14 @@ const MEMBER_SPREADSHEET_ID = '1j-KMHvmPIuIziymLE_85G6gCbrZyHzj9CgQeevjels0';
 const SIGNUP_SPREADSHEET_ID = '1Mr87l1_sfIYkcArtj2ev9PkTYjN-zthzB44v1guH2cI';
 
 const sessions = [
-  { id: "tue", name: "週二匹克球團", day: 2, limit: 40, waitlistLimit: 20 },
-  { id: "thu", name: "週四匹克球團", day: 4, limit: 40, waitlistLimit: 20 },
-  { id: "sat", name: "週六匹克球團", day: 6, limit: 40, waitlistLimit: 20 }
+  { id: "tue", name: "週二匹克球團", day: 2, limit: 36, waitlistLimit: 30 },
+  { id: "wed", name: "週三匹克球團", day: 3, limit: 2, waitlistLimit: 4 },
+  { id: "thu", name: "週四匹克球團", day: 4, limit: 36, waitlistLimit: 30 },
+  { id: "sat", name: "週六匹克球團", day: 6, limit: 36, waitlistLimit: 30 }
 ];
 
-const seatsCache = { tue: 40, thu: 40, sat: 40 };
-const waitlistCache = { tue: 0, thu: 0, sat: 0 };
+const seatsCache = { tue: 36, wed: 2, thu: 36, sat: 36 };
+const waitlistCache = { tue: 0, wed: 0, thu: 0, sat: 0 };
 const registeredEmails = { tue: new Set(), thu: new Set(), sat: new Set() };
 
 async function getGoogleDoc(spreadsheetId) {

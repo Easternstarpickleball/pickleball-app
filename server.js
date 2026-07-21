@@ -25,11 +25,22 @@ const waitlistCache = { tue: 0, thu: 0, sat: 0 };
 const registeredEmails = { tue: new Set(), thu: new Set(), sat: new Set() };
 
 // 🔑 取得指定的 Google 試算表物件
+
 async function getGoogleDoc(spreadsheetId) {
-  const creds = require('./google-key.json');
+  let creds;
+  if (process.env.GOOGLE_JSON_KEY) {
+    console.log("✅ 成功讀取 Render 環境變數 GOOGLE_JSON_KEY");
+    creds = JSON.parse(process.env.GOOGLE_JSON_KEY);
+  } else {
+    creds = require('./google-key.json');
+  }
+
+  // 處理 private_key 裡面的換行符號
+  const privateKey = creds.private_key.replace(/\\n/g, '\n');
+
   const serviceAccountAuth = new JWT({
     email: creds.client_email,
-    key: creds.private_key,
+    key: privateKey,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
   const doc = new GoogleSpreadsheet(spreadsheetId, serviceAccountAuth);

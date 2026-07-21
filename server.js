@@ -32,7 +32,13 @@ const sessions = [
 
 const seatsCache = { tue: 36, wed: 2, thu: 36, sat: 36 };
 const waitlistCache = { tue: 0, wed: 0, thu: 0, sat: 0 };
-const registeredEmails = { tue: new Set(), thu: new Set(), sat: new Set() };
+// 💡 已補上 wed（週三）
+const registeredEmails = { tue: new Set(), wed: new Set(), thu: new Set(), sat: new Set() };
+
+// ⚡ 快取機制：在記憶體中存放會員名單與上次更新時間（避免觸發 Google API 429 限制）
+let memberListCache = [];
+let lastMemberFetchTime = 0;
+const CACHE_TTL = 10 * 60 * 1000; // 快取有效時間：10 分鐘
 
 async function getGoogleDoc(spreadsheetId) {
   let creds;
@@ -54,32 +60,46 @@ async function getGoogleDoc(spreadsheetId) {
   return doc;
 }
 
-// 🔍 搜尋會員資料庫：比對是否為會員
-async function checkMemberStatus(userEmail) {
+// 🔍 取得會員名單（優先使用記憶體快取，過期才重新讀取 Google Sheet）
+async function getMemberList() {
+  const now = Date.now();
+  // 若快取未過期且已有資料，直接使用快取
+  if (memberListCache.length > 0 && (now - lastMemberFetchTime < CACHE_TTL)) {
+    return memberListCache;
+  }
+
   try {
+    console.log("🔄 向 Google Sheets 更新會員名單中...");
     const doc = await getGoogleDoc(MEMBER_SPREADSHEET_ID);
     const memberSheet = doc.sheetsByTitle['會員名單'] || doc.sheetsByIndex[0];
-    
     const rows = await memberSheet.getRows();
-    const found = rows.find(row => {
-      const emailInSheet = row.get('Gmail 帳號') || row.get('Email') || '';
-      return emailInSheet.trim().toLowerCase() === userEmail.trim().toLowerCase();
-    });
 
-    if (found) {
-      return {
-        isMember: true,
-        name: found.get('姓名') || found.get('姓名/暱稱') || '已登記會員'
-      };
-    } else {
-      return {
-        isMember: false,
-        name: '非會員 / 未登記'
-      };
-    }
+    memberListCache = rows.map(row => ({
+      email: (row.get('Gmail 帳號') || row.get('Email') || '').trim().toLowerCase(),
+      name: row.get('姓名') || row.get('姓名/暱稱') || '已登記會員'
+    }));
+
+    lastMemberFetchTime = now;
+    console.log(`✅ 會員名單更新成功，共 ${memberListCache.length} 筆會員。`);
+    return memberListCache;
   } catch (err) {
-    console.error('❌ 查詢會員資料庫失敗：', err.message);
-    return { isMember: false, name: '查無姓名' };
+    console.error('❌ 讀取會員資料庫失敗：', err.message);
+    // 若讀取失敗但過去有快取，繼續沿用舊快取，避免系統掛掉
+    return memberListCache;
+  }
+}
+
+// 🔍 搜尋會員狀態（完全從記憶體搜尋，零延遲也不佔用 Google API 額度）
+async function checkMemberStatus(userEmail) {
+  const cleanEmail = userEmail.trim().toLowerCase();
+  const members = await getMemberList();
+  
+  const found = members.find(m => m.email === cleanEmail);
+
+  if (found) {
+    return { isMember: true, name: found.name };
+  } else {
+    return { isMember: false, name: '非會員 / 未登記' };
   }
 }
 
@@ -309,4 +329,6 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 匹克球搶位伺服器已成功啟動！通訊埠：${PORT}`);
+  // 伺服器啟動時，預先抓取一次會員名單載入記憶體
+  getMemberList();
 });

@@ -1,12 +1,14 @@
 const express = require('express');
 const path = require('path');
+const { GoogleSpreadsheet } = require('google-spreadsheet');
+const { JWT } = require('google-auth-library');
 const app = express();
-const PORT = process.env.PORT || 3000; // 支援 Render 環境變數的 PORT
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '/')));
 
-// 💡 1. Google Sheet ID (後續連動套件時使用)
+// 💡 1. 你的 Google 試算表 ID (填入你試算表網址裡的那串字)
 const SPREADSHEET_ID = '1j-KMHvmPIuIziymLE_85G6gCbrZyHzj9CgQeevjels0';
 
 // 💡 2. 球敘場次設定 (2: 週二, 4: 週四, 6: 週六)
@@ -16,158 +18,140 @@ const sessions = [
   { id: "sat", name: "週六匹克球團", day: 6, limit: 40, waitlistLimit: 20 }
 ];
 
-// 記憶體暫存剩餘名額 (40位正取)
-const seatsCache = {
-  tue: 40,
-  thu: 40,
-  sat: 40
-};
+// 記憶體快取名額與候補
+const seatsCache = { tue: 40, thu: 40, sat: 40 };
+const waitlistCache = { tue: 0, thu: 0, sat: 0 };
+const registeredEmails = { tue: new Set(), thu: new Set(), sat: new Set() };
 
-// 記憶體暫存候補序號 (預設從 0 開始累加)
-const waitlistCache = {
-  tue: 0,
-  thu: 0,
-  sat: 0
-};
-
-// 防重紀錄：記錄各場次已報名的 Email (結構如: { tue: Set(['a@gmail.com']), thu: Set() })
-const registeredEmails = {
-  tue: new Set(),
-  thu: new Set(),
-  sat: new Set()
-};
-
-// 報名成功紀錄表 (存放正取與候補的完整名冊)
-const registrations = [];
-
-// 檢查場次是否已開放 (活動前一天 18:00 後開放)
-function checkIsOpen(targetDateStr) {
-  const now = new Date();
-  const eventDate = new Date(targetDateStr);
-  const openTime = new Date(eventDate);
-  openTime.setDate(eventDate.getDate() - 1);
-  openTime.setHours(18, 0, 0, 0);
-
-  return {
-    isOpen: true, // 👈 測試模式：強制開放全場次
-    openTimeStr: `${openTime.getMonth() + 1}/${openTime.getDate()} 18:00`
-  };
+// 🔑 初始化 Google Sheets 認證
+async function getGoogleDoc() {
+  const creds = require('./google-key.json');
+  const serviceAccountAuth = new JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+  const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
+  await doc.loadInfo();
+  return doc;
 }
 
-// API: 取得當前所有場次狀態
-app.get('/api/sessions', (req, res) => {
-  const today = new Date();
-  
-  const result = sessions.map(s => {
-    const dayOfWeek = today.getDay();
-    let daysUntil = (s.day - dayOfWeek + 7) % 7;
-    if (daysUntil === 0) daysUntil = 7;
+// 📊 試算表管理邏輯：自動新建分頁與隱藏舊分頁
+async function saveToGoogleSheet(dateStr, userName, userEmail, status) {
+  try {
+    const doc = await getGoogleDoc();
     
-    const nextDate = new Date(today);
-    nextDate.setDate(today.getDate() + daysUntil);
-    const dateStr = `${nextDate.getFullYear()}-${nextDate.getMonth() + 1}-${nextDate.getDate()}`;
-    const displayDate = `${nextDate.getMonth() + 1}/${nextDate.getDate()}`;
+    // 1. 檢查是否已有該日期的分頁，若無則新建
+    let sheet = doc.sheetsByTitle[dateStr];
+    if (!sheet) {
+      sheet = await doc.addSheet({ 
+        title: dateStr, 
+        headerValues: ['報名時間', '姓名/暱稱', 'Gmail 帳號', '報名狀態'] 
+      });
+    }
 
-    const status = checkIsOpen(dateStr);
+    // 2. 寫入報名資料
+    const nowStr = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+    await sheet.addRow({
+      '報名時間': nowStr,
+      '姓名/暱稱': userName,
+      'Gmail 帳號': userEmail,
+      '報名狀態': status
+    });
+
+    // 3. 管理分頁：永遠只顯示「最新 2 次」的分頁，隱藏舊分頁
+    const allSheets = doc.sheetsByIndex;
+    const dateSheets = allSheets
+      .filter(s => /^\d{4}-\d{1,2}-\d{1,2}$/.test(s.title))
+      .sort((a, b) => new Date(b.title) - new Date(a.title));
+
+    for (let i = 0; i < dateSheets.length; i++) {
+      if (i >= 2) {
+        await dateSheets[i].updateProperties({ hidden: true });
+      } else {
+        await dateSheets[i].updateProperties({ hidden: false });
+      }
+    }
+  } catch (err) {
+    console.error('❌ 寫入 Google 試算表失敗：', err.message);
+  }
+}
+
+// 計算活動日期的輔助函式
+function getSessionTargetDate(dayOfWeekTarget) {
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  let daysUntil = (dayOfWeekTarget - dayOfWeek + 7) % 7;
+  if (daysUntil === 0) daysUntil = 7;
+  
+  const nextDate = new Date(today);
+  nextDate.setDate(today.getDate() + daysUntil);
+  return `${nextDate.getFullYear()}-${nextDate.getMonth() + 1}-${nextDate.getDate()}`;
+}
+
+// API: 取得當前場次
+app.get('/api/sessions', (req, res) => {
+  const result = sessions.map(s => {
+    const dateStr = getSessionTargetDate(s.day);
+    const dateParts = dateStr.split('-');
+    const displayDate = `${dateParts[1]}/${dateParts[2]}`;
 
     return {
       ...s,
       dateStr: dateStr,
       displayDate: displayDate,
-      isOpen: status.isOpen,
-      openTimeStr: status.openTimeStr,
+      isOpen: true,
       remainingSeats: seatsCache[s.id],
       waitlistCount: waitlistCache[s.id]
     };
   });
-
   res.json(result);
 });
 
-// API: 高併發搶位與候補接口
-app.post('/api/grab', (req, res) => {
-  const { sessionId, userEmail } = req.body;
+// API: 搶位與候補接口
+app.post('/api/grab', async (req, res) => {
+  const { sessionId, userName, userEmail } = req.body;
 
-  if (!sessionId || !userEmail) {
-    return res.status(400).json({ success: false, message: "缺少必要參數！" });
+  if (!sessionId || !userName || !userEmail) {
+    return res.status(400).json({ success: false, message: "請填寫完整資訊（姓名與 Email）！" });
   }
 
-  // 整理 Email 格式（轉小寫與去空格，避免重複報名漏網之魚）
   const cleanEmail = userEmail.trim().toLowerCase();
-
-  // 1. 防重檢查：同一個 Gmail 在同一個場次只能填寫一次
-  if (registeredEmails[sessionId] && registeredEmails[sessionId].has(cleanEmail)) {
-    return res.json({ 
-      success: false, 
-      message: "❌ 您已經報名過此場次囉！請勿重複送出。" 
-    });
-  }
-
   const targetSession = sessions.find(s => s.id === sessionId);
+  const dateStr = getSessionTargetDate(targetSession.day);
 
-  // 2. 判斷是否還有正取名額
-  if (seatsCache[sessionId] > 0) {
-    // 扣減正取名額
-    seatsCache[sessionId] -= 1;
-    
-    // 標記該 Email 已經報名
-    registeredEmails[sessionId].add(cleanEmail);
-
-    // 寫入報名紀錄
-    registrations.push({
-      sessionId,
-      userEmail: cleanEmail,
-      type: '正取',
-      timestamp: new Date().toISOString()
-    });
-
-    console.log(`🎉 搶位成功(正取)！會員: ${cleanEmail}, 剩餘正取: ${seatsCache[sessionId]}`);
-
-    return res.json({
-      success: true,
-      status: 'REGULAR',
-      message: "🎉 搶位成功！已為您保留正取名額！",
-      remainingSeats: seatsCache[sessionId]
-    });
-  } 
-  
-  // 3. 正取已滿，判斷是否還能候補
-  else if (waitlistCache[sessionId] < targetSession.waitlistLimit) {
-    // 增加候補序號
-    waitlistCache[sessionId] += 1;
-    const waitlistNo = waitlistCache[sessionId];
-
-    // 標記該 Email 已經報名
-    registeredEmails[sessionId].add(cleanEmail);
-
-    // 寫入報名紀錄
-    registrations.push({
-      sessionId,
-      userEmail: cleanEmail,
-      type: `候補第 ${waitlistNo} 位`,
-      timestamp: new Date().toISOString()
-    });
-
-    console.log(`⚠️ 正取已滿，轉候補！會員: ${cleanEmail}, 候補順序: ${waitlistNo}`);
-
-    return res.json({
-      success: true,
-      status: 'WAITLIST',
-      message: `⚠️ 正取已滿！已成功為您登記為【候補第 ${waitlistNo} 位】！`,
-      waitlistNo: waitlistNo
-    });
-  } 
-  
-  // 4. 正取與候補皆已滿額
-  else {
-    return res.json({ 
-      success: false, 
-      message: "❌ 額滿了！正取與候補名額皆已售罄，下週請早！" 
-    });
+  // 1. 防重檢查
+  if (registeredEmails[sessionId] && registeredEmails[sessionId].has(cleanEmail)) {
+    return res.json({ success: false, message: "❌ 您已經報名過此場次囉！請勿重複送出。" });
   }
+
+  let statusText = '';
+  let isSuccess = false;
+  let resMessage = '';
+
+  // 2. 判斷正取或候補
+  if (seatsCache[sessionId] > 0) {
+    seatsCache[sessionId] -= 1;
+    registeredEmails[sessionId].add(cleanEmail);
+    statusText = '正取';
+    resMessage = "🎉 搶位成功！已為您保留正取名額！";
+    isSuccess = true;
+  } else if (waitlistCache[sessionId] < targetSession.waitlistLimit) {
+    waitlistCache[sessionId] += 1;
+    registeredEmails[sessionId].add(cleanEmail);
+    statusText = `候補第 ${waitlistCache[sessionId]} 位`;
+    resMessage = `⚠️ 正取已滿！已成功為您登記為【候補第 ${waitlistCache[sessionId]} 位】！`;
+    isSuccess = true;
+  } else {
+    return res.json({ success: false, message: "❌ 額滿了！正取與候補名額皆已售罄！" });
+  }
+
+  // 3. 異步寫入 Google 試算表
+  saveToGoogleSheet(dateStr, userName, cleanEmail, statusText);
+
+  res.json({ success: isSuccess, message: resMessage });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 匹克球搶位伺服器已成功啟動！`);
-  console.log(`🔗 伺服器通訊埠：${PORT}`);
+  console.log(`🚀 匹克球搶位伺服器已成功啟動！通訊埠：${PORT}`);
 });

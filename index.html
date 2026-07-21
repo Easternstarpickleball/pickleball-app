@@ -13,11 +13,11 @@
     .status-box { background-color: #e8f5e9; color: #1b5e20; padding: 15px; border-radius: 8px; font-size: 18px; margin-bottom: 20px; }
     .session-container { margin: 15px 0; padding: 15px; background: #fdfdfd; border: 1px dashed #ccc; border-radius: 10px; }
     
-    /* 基礎按鈕樣式 */
+    /* 按鈕基礎與顏色樣式 */
     .session-btn { display: block; width: 100%; margin: 10px 0; padding: 12px; font-size: 16px; border-radius: 8px; cursor: pointer; color: white; border: none; font-weight: bold; transition: background 0.2s; }
     .session-btn:disabled { background: #ccc !important; cursor: not-allowed; opacity: 0.7; }
     
-    /* 2、4、6 每一天的背景顏色與 hover 效果 */
+    /* 246 專屬顏色 */
     .day-tue { background-color: #007bff; } /* 週二：藍色 */
     .day-tue:hover:not(:disabled) { background-color: #0056b3; }
 
@@ -27,7 +27,6 @@
     .day-sat { background-color: #fd7e14; } /* 週六：橘色 */
     .day-sat:hover:not(:disabled) { background-color: #d96302; }
 
-    /* 其他預設顏色 */
     .day-default { background-color: #6c757d; }
     .day-default:hover:not(:disabled) { background-color: #545b62; }
 
@@ -69,23 +68,18 @@
     let selectedSession = null;
     let currentUserEmail = null;
 
-    // Google 登入成功後的回傳處理
     function handleCredentialResponse(response) {
-      // 解析 Google 傳回來的 JWT token 取得 Email
       const responsePayload = parseJwt(response.credential);
       currentUserEmail = responsePayload.email;
 
-      // 顯示登入狀態
       document.getElementById('auth-box').style.display = 'none';
       const profileBox = document.getElementById('user-profile');
       profileBox.style.display = 'block';
       profileBox.innerText = `👤 認證會員：${responsePayload.name} (${currentUserEmail})`;
 
-      // 驗證成功後，載入場次按鈕
       loadSessions();
     }
 
-    // 解析 JWT 的小工具
     function parseJwt(token) {
       var base64Url = token.split('.')[1];
       var base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
@@ -95,7 +89,6 @@
       return JSON.parse(jsonPayload);
     }
 
-    // 根據文字或日期判定週幾，並傳回對應 CSS Class 類別
     function getDayColorClass(session) {
       const str = (session.name + " " + session.displayDate);
       if (str.includes("二") || str.includes("Tue") || str.includes("週二") || str.includes("星期二")) {
@@ -120,12 +113,11 @@
           const btn = document.createElement('button');
           const dayClass = getDayColorClass(s);
           
-          // 套用基礎及專屬顏色的 class，並刪除🏓 emoji
           btn.className = `session-btn ${dayClass}`;
           
           if (s.isOpen) {
             btn.innerText = `${s.name} (${s.displayDate}) - 剩餘 ${s.remainingSeats} 位`;
-            btn.onclick = () => selectSession(s, dayClass);
+            btn.onclick = () => selectSession(s);
           } else {
             btn.innerText = `🔒 ${s.name} (${s.displayDate}) - ${s.openTimeStr} 開放`;
             btn.disabled = true;
@@ -137,9 +129,8 @@
       }
     }
 
-    function selectSession(session, dayClass) {
+    function selectSession(session) {
       selectedSession = session;
-      // 刪除標題上的🏓 emoji
       document.getElementById('event-title').innerText = `${session.name}`;
       document.getElementById('seats').innerText = session.remainingSeats;
       
@@ -148,27 +139,26 @@
       grabBtn.innerText = `🔥 立即搶位 (${session.displayDate})`;
     }
 
-    // 修改後的 startGrab 函式
-  async function startGrab() {
-  if (!selectedSession || !currentUserCredential) return;
+    async function startGrab() {
+      if (!selectedSession || !currentUserEmail) return;
 
-  const res = await fetch('/api/grab', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: selectedSession.id,
-      googleToken: currentUserCredential // 傳送原始 JWT Token，而不是 Email
-    })
-  });
+      const res = await fetch('/api/grab', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: selectedSession.id,
+          userEmail: currentUserEmail  /* 恢復為原本相容後端的參數 */
+        })
+      });
 
-  const result = await res.json();
-  alert(result.message);
+      const result = await res.json();
+      alert(result.message);
 
-  if (result.success) {
-    document.getElementById('seats').innerText = result.remainingSeats;
-    loadSessions();
-  }
-  }
+      if (result.success) {
+        document.getElementById('seats').innerText = result.remainingSeats;
+        loadSessions();
+      }
+    }
   </script>
 </body>
 </html>

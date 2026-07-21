@@ -12,8 +12,25 @@
     .date-title { color: #555; font-size: 18px; margin-bottom: 20px; font-weight: bold; }
     .status-box { background-color: #e8f5e9; color: #1b5e20; padding: 15px; border-radius: 8px; font-size: 18px; margin-bottom: 20px; }
     .session-container { margin: 15px 0; padding: 15px; background: #fdfdfd; border: 1px dashed #ccc; border-radius: 10px; }
-    .session-btn { display: block; width: 100%; margin: 10px 0; padding: 12px; font-size: 16px; border-radius: 8px; cursor: pointer; background: #2e7d32; color: white; border: none; font-weight: bold; }
-    .session-btn:disabled { background: #ccc; cursor: not-allowed; }
+    
+    /* 基礎按鈕樣式 */
+    .session-btn { display: block; width: 100%; margin: 10px 0; padding: 12px; font-size: 16px; border-radius: 8px; cursor: pointer; color: white; border: none; font-weight: bold; transition: background 0.2s; }
+    .session-btn:disabled { background: #ccc !important; cursor: not-allowed; opacity: 0.7; }
+    
+    /* 2、4、6 每一天的背景顏色與 hover 效果 */
+    .day-tue { background-color: #007bff; } /* 週二：藍色 */
+    .day-tue:hover:not(:disabled) { background-color: #0056b3; }
+
+    .day-thu { background-color: #28a745; } /* 週四：綠色 */
+    .day-thu:hover:not(:disabled) { background-color: #1e7e34; }
+
+    .day-sat { background-color: #fd7e14; } /* 週六：橘色 */
+    .day-sat:hover:not(:disabled) { background-color: #d96302; }
+
+    /* 其他預設顏色 */
+    .day-default { background-color: #6c757d; }
+    .day-default:hover:not(:disabled) { background-color: #545b62; }
+
     .btn-submit { background-color: #ff4757; color: white; border: none; padding: 15px 30px; font-size: 22px; font-weight: bold; border-radius: 10px; cursor: pointer; width: 100%; box-shadow: 0 4px 10px rgba(255, 71, 87, 0.4); margin-top: 15px; }
     .btn-submit:disabled { background: #b2bec3; box-shadow: none; cursor: not-allowed; }
     .user-info { background: #e3f2fd; color: #0d47a1; padding: 10px; border-radius: 8px; margin: 15px 0; font-weight: bold; }
@@ -22,7 +39,7 @@
 <body>
 
   <div class="card">
-    <h1 id="event-title">🏓 匹克球團秒搶報名</h1>
+    <h1 id="event-title">匹克球團秒搶報名</h1>
     <div class="date-title">請選擇下方場次</div>
 
     <div class="status-box">
@@ -78,6 +95,19 @@
       return JSON.parse(jsonPayload);
     }
 
+    // 根據文字或日期判定週幾，並傳回對應 CSS Class 類別
+    function getDayColorClass(session) {
+      const str = (session.name + " " + session.displayDate);
+      if (str.includes("二") || str.includes("Tue") || str.includes("週二") || str.includes("星期二")) {
+        return "day-tue";
+      } else if (str.includes("四") || str.includes("Thu") || str.includes("週四") || str.includes("星期四")) {
+        return "day-thu";
+      } else if (str.includes("六") || str.includes("Sat") || str.includes("週六") || str.includes("星期六")) {
+        return "day-sat";
+      }
+      return "day-default";
+    }
+
     async function loadSessions() {
       try {
         const res = await fetch('/api/sessions');
@@ -88,11 +118,14 @@
 
         sessions.forEach(s => {
           const btn = document.createElement('button');
-          btn.className = 'session-btn';
+          const dayClass = getDayColorClass(s);
+          
+          // 套用基礎及專屬顏色的 class，並刪除🏓 emoji
+          btn.className = `session-btn ${dayClass}`;
           
           if (s.isOpen) {
-            btn.innerText = `🏓 ${s.name} (${s.displayDate}) - 剩餘 ${s.remainingSeats} 位`;
-            btn.onclick = () => selectSession(s);
+            btn.innerText = `${s.name} (${s.displayDate}) - 剩餘 ${s.remainingSeats} 位`;
+            btn.onclick = () => selectSession(s, dayClass);
           } else {
             btn.innerText = `🔒 ${s.name} (${s.displayDate}) - ${s.openTimeStr} 開放`;
             btn.disabled = true;
@@ -104,9 +137,10 @@
       }
     }
 
-    function selectSession(session) {
+    function selectSession(session, dayClass) {
       selectedSession = session;
-      document.getElementById('event-title').innerText = `🏓 ${session.name}`;
+      // 刪除標題上的🏓 emoji
+      document.getElementById('event-title').innerText = `${session.name}`;
       document.getElementById('seats').innerText = session.remainingSeats;
       
       const grabBtn = document.getElementById('btn-grab');

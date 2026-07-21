@@ -4,6 +4,9 @@ const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT, OAuth2Client } = require('google-auth-library');
 const rateLimit = require('express-rate-limit');
 
+// 💡 強制指定 Node.js 環境時區為 Asia/Taipei (UTC+8)
+process.env.TZ = 'Asia/Taipei';
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -32,13 +35,19 @@ const sessions = [
 
 const seatsCache = { tue: 36, wed: 2, thu: 36, sat: 36 };
 const waitlistCache = { tue: 0, wed: 0, thu: 0, sat: 0 };
-// 💡 已補上 wed（週三）
 const registeredEmails = { tue: new Set(), wed: new Set(), thu: new Set(), sat: new Set() };
 
-// ⚡ 快取機制：在記憶體中存放會員名單與上次更新時間（避免觸發 Google API 429 限制）
+// ⚡ 快取機制
 let memberListCache = [];
 let lastMemberFetchTime = 0;
 const CACHE_TTL = 10 * 60 * 1000; // 快取有效時間：10 分鐘
+
+// 🛠️ 精準計算 UTC+8 當前時間
+function getAsiaTaipeiNow() {
+  const now = new Date();
+  const utc8Time = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
+  return utc8Time;
+}
 
 async function getGoogleDoc(spreadsheetId) {
   let creds;
@@ -60,10 +69,8 @@ async function getGoogleDoc(spreadsheetId) {
   return doc;
 }
 
-// 🔍 取得會員名單（優先使用記憶體快取，過期才重新讀取 Google Sheet）
 async function getMemberList() {
   const now = Date.now();
-  // 若快取未過期且已有資料，直接使用快取
   if (memberListCache.length > 0 && (now - lastMemberFetchTime < CACHE_TTL)) {
     return memberListCache;
   }
@@ -84,12 +91,10 @@ async function getMemberList() {
     return memberListCache;
   } catch (err) {
     console.error('❌ 讀取會員資料庫失敗：', err.message);
-    // 若讀取失敗但過去有快取，繼續沿用舊快取，避免系統掛掉
     return memberListCache;
   }
 }
 
-// 🔍 搜尋會員狀態（完全從記憶體搜尋，零延遲也不佔用 Google API 額度）
 async function checkMemberStatus(userEmail) {
   const cleanEmail = userEmail.trim().toLowerCase();
   const members = await getMemberList();
@@ -140,7 +145,6 @@ async function saveToGoogleSheet(dateStr, userEmail, userName, status) {
   }
 }
 
-// 防爆寫入佇列 (Queue)
 const writeQueue = [];
 let isProcessingQueue = false;
 
@@ -162,7 +166,7 @@ async function processQueue() {
 }
 
 function getSessionTargetDateObj(dayOfWeekTarget) {
-  const today = new Date();
+  const today = getAsiaTaipeiNow();
   const dayOfWeek = today.getDay();
   let daysUntil = (dayOfWeekTarget - dayOfWeek + 7) % 7;
   if (daysUntil === 0) daysUntil = 7;
@@ -176,9 +180,9 @@ function formatDateStr(dateObj) {
   return `${dateObj.getFullYear()}-${dateObj.getMonth() + 1}-${dateObj.getDate()}`;
 }
 
-// API: 取得當前場次（動態顯示會員/非會員開放時間）
+// API: 取得當前場次
 app.get('/api/sessions', async (req, res) => {
-  const now = new Date();
+  const now = getAsiaTaipeiNow();
   const token = req.query.token;
 
   let isMember = false;
@@ -202,21 +206,21 @@ app.get('/api/sessions', async (req, res) => {
     const dateStr = formatDateStr(targetDateObj);
     const displayDate = `${targetDateObj.getMonth() + 1}/${targetDateObj.getDate()}`;
 
-    // 會員開放時間：前一天 18:00
-    const memberOpenTime = new Date(targetDateObj);
-    memberOpenTime.setDate(targetDateObj.getDate() - 1);
-    memberOpenTime.setHours(18, 0, 0, 0);
+    // 開放日期：前一天
+    const openDate = new Date(targetDateObj);
+    openDate.setDate(targetDateObj.getDate() - 1);
 
-    // 非會員開放時間：前一天 22:00
-    const nonMemberOpenTime = new Date(targetDateObj);
-    nonMemberOpenTime.setDate(targetDateObj.getDate() - 1);
-    nonMemberOpenTime.setHours(22, 0, 0, 0);
+    // 強制以 UTC+8 建立 18:00 與 22:00 物件
+    const memberOpenTime = new Date(openDate.getFullYear(), openDate.getMonth(), openDate.getDate(), 18, 0, 0);
+    const nonMemberOpenTime = new Date(openDate.getFullYear(), openDate.getMonth(), openDate.getDate(), 22, 0, 0);
 
     const userOpenTime = isMember ? memberOpenTime : nonMemberOpenTime;
-    const isOpen = now >= userOpenTime;
+    
+    // 比對精準毫秒時間戳
+    const isOpen = now.getTime() >= userOpenTime.getTime();
 
-    const openMonth = userOpenTime.getMonth() + 1;
-    const openDay = userOpenTime.getDate();
+    const openMonth = openDate.getMonth() + 1;
+    const openDay = openDate.getDate();
     const openHour = isMember ? "18:00" : "22:00";
     const openTimeStr = `${openMonth}/${openDay} ${openHour}`;
 
@@ -242,7 +246,6 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
     return res.status(400).json({ success: false, message: "無效的請求參數！" });
   }
 
-  // 1. 驗證 Google Token
   let userEmail = '';
   try {
     const ticket = await googleClient.verifyIdToken({
@@ -265,31 +268,27 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
   const targetDateObj = getSessionTargetDateObj(targetSession.day);
   const dateStr = formatDateStr(targetDateObj);
 
-  // ⏰ 2. 判斷階梯式開放時間
-  const now = new Date();
+  const now = getAsiaTaipeiNow();
 
-  const memberOpenTime = new Date(targetDateObj);
-  memberOpenTime.setDate(targetDateObj.getDate() - 1);
-  memberOpenTime.setHours(18, 0, 0, 0);
+  const openDate = new Date(targetDateObj);
+  openDate.setDate(targetDateObj.getDate() - 1);
 
-  const nonMemberOpenTime = new Date(targetDateObj);
-  nonMemberOpenTime.setDate(targetDateObj.getDate() - 1);
-  nonMemberOpenTime.setHours(22, 0, 0, 0);
+  const memberOpenTime = new Date(openDate.getFullYear(), openDate.getMonth(), openDate.getDate(), 18, 0, 0);
+  const nonMemberOpenTime = new Date(openDate.getFullYear(), openDate.getMonth(), openDate.getDate(), 22, 0, 0);
 
-  if (now < memberOpenTime) {
+  if (now.getTime() < memberOpenTime.getTime()) {
     return res.json({ success: false, message: "🔒 此場次尚未開放報名！" });
   }
 
   const memberStatus = await checkMemberStatus(cleanEmail);
 
-  if (now < nonMemberOpenTime && !memberStatus.isMember) {
+  if (now.getTime() < nonMemberOpenTime.getTime() && !memberStatus.isMember) {
     return res.json({ 
       success: false, 
       message: `🔒 18:00 ~ 22:00 為會員專屬報名時段！非會員請於晚上 22:00 後再試。` 
     });
   }
 
-  // 3. 防重複報名檢查
   if (registeredEmails[sessionId] && registeredEmails[sessionId].has(cleanEmail)) {
     return res.json({ success: false, message: "❌ 您已經報名過此場次囉！請勿重複送出。" });
   }
@@ -298,7 +297,6 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
   let isSuccess = false;
   let resMessage = '';
 
-  // 4. 正取 / 候補扣名額邏輯
   if (seatsCache[sessionId] > 0) {
     seatsCache[sessionId] -= 1;
     registeredEmails[sessionId].add(cleanEmail);
@@ -315,7 +313,6 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
     return res.json({ success: false, message: "❌ 額滿了！正取與候補名額皆已售罄！" });
   }
 
-  // 5. 排隊非同步寫入 Google Sheet
   writeQueue.push({ dateStr, cleanEmail, userName: memberStatus.name, statusText });
   processQueue();
 
@@ -329,6 +326,5 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 匹克球搶位伺服器已成功啟動！通訊埠：${PORT}`);
-  // 伺服器啟動時，預先抓取一次會員名單載入記憶體
   getMemberList();
 });

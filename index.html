@@ -148,26 +148,27 @@
       grabBtn.innerText = `🔥 立即搶位 (${session.displayDate})`;
     }
 
-    async function startGrab() {
-      if (!selectedSession || !currentUserEmail) return;
+    // 修改後的 startGrab 函式
+  async function startGrab() {
+  if (!selectedSession || !currentUserCredential) return;
 
-      const res = await fetch('/api/grab', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: selectedSession.id,
-          userEmail: currentUserEmail
-        })
-      });
+  const res = await fetch('/api/grab', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: selectedSession.id,
+      googleToken: currentUserCredential // 傳送原始 JWT Token，而不是 Email
+    })
+  });
 
-      const result = await res.json();
-      alert(result.message);
+  const result = await res.json();
+  alert(result.message);
 
-      if (result.success) {
-        document.getElementById('seats').innerText = result.remainingSeats;
-        loadSessions();
-      }
-    }
+  if (result.success) {
+    document.getElementById('seats').innerText = result.remainingSeats;
+    loadSessions();
+  }
+  }
   </script>
 </body>
 </html>

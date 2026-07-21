@@ -13,7 +13,7 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '/')));
 
-// API 頻率限制
+// API 頻率限制（防刷單）
 const grabLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -53,7 +53,7 @@ async function getGoogleDoc(spreadsheetId) {
   return doc;
 }
 
-// 🔍 搜尋會員資料庫：如果是會員，回傳姓名；若非會員回傳 null
+// 🔍 搜尋會員資料庫：檢查是否為會員
 async function checkMemberStatus(userEmail) {
   try {
     const doc = await getGoogleDoc(MEMBER_SPREADSHEET_ID);
@@ -154,17 +154,33 @@ function formatDateStr(dateObj) {
   return `${dateObj.getFullYear()}-${dateObj.getMonth() + 1}-${dateObj.getDate()}`;
 }
 
+// API: 取得當前場次與動態時間解鎖狀態
 app.get('/api/sessions', (req, res) => {
+  const now = new Date();
+
   const result = sessions.map(s => {
     const targetDateObj = getSessionTargetDateObj(s.day);
     const dateStr = formatDateStr(targetDateObj);
     const displayDate = `${targetDateObj.getMonth() + 1}/${targetDateObj.getDate()}`;
 
+    // 💡 設定會員開放時間：球敘前一天的 18:00 (晚上 6 點)
+    const memberOpenTime = new Date(targetDateObj);
+    memberOpenTime.setDate(targetDateObj.getDate() - 1);
+    memberOpenTime.setHours(18, 0, 0, 0);
+
+    // 只要到了 18:00 就對外解鎖（因為會員可以點擊了）
+    const isOpen = now >= memberOpenTime;
+
+    const openMonth = memberOpenTime.getMonth() + 1;
+    const openDay = memberOpenTime.getDate();
+    const openTimeStr = `${openMonth}/${openDay} 18:00`;
+
     return {
       ...s,
       dateStr: dateStr,
       displayDate: displayDate,
-      isOpen: true,
+      isOpen: isOpen,
+      openTimeStr: openTimeStr,
       remainingSeats: seatsCache[s.id],
       waitlistCount: waitlistCache[s.id]
     };
@@ -172,7 +188,7 @@ app.get('/api/sessions', (req, res) => {
   res.json(result);
 });
 
-// API: 搶位與候補接口
+// API: 搶位與候補接口（含階梯式時間權限驗證）
 app.post('/api/grab', grabLimiter, async (req, res) => {
   const { sessionId, token } = req.body;
 
@@ -203,22 +219,32 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
   const targetDateObj = getSessionTargetDateObj(targetSession.day);
   const dateStr = formatDateStr(targetDateObj);
 
-  // ⏰ 2. 判斷時間與會員資格權限限制
-  // 計算「球敘前一天 22:00」的時間點
-  const nonMemberOpenTime = new Date(targetDateObj);
-  nonMemberOpenTime.setDate(targetDateObj.getDate() - 1); // 往前推 1 天
-  nonMemberOpenTime.setHours(22, 0, 0, 0); // 設定為晚上 22:00:00
-
+  // ⏰ 2. 計算關鍵時間點
   const now = new Date();
 
-  // 檢查是否是會員
+  // 會員開放時間：前一天 18:00
+  const memberOpenTime = new Date(targetDateObj);
+  memberOpenTime.setDate(targetDateObj.getDate() - 1);
+  memberOpenTime.setHours(18, 0, 0, 0);
+
+  // 非會員開放時間：前一天 22:00
+  const nonMemberOpenTime = new Date(targetDateObj);
+  nonMemberOpenTime.setDate(targetDateObj.getDate() - 1);
+  nonMemberOpenTime.setHours(22, 0, 0, 0);
+
+  // 檢查是否已到會員開放時間
+  if (now < memberOpenTime) {
+    return res.json({ success: false, message: "🔒 此場次尚未開放報名！" });
+  }
+
+  // 檢查會員資格
   const memberStatus = await checkMemberStatus(cleanEmail);
 
-  // 如果「還沒到前一天的晚上 22:00」而且「不是會員」，則擋下
+  // 如果時間在「18:00 ~ 22:00 之間」且「不是會員」，則拒絕
   if (now < nonMemberOpenTime && !memberStatus.isMember) {
     return res.json({ 
       success: false, 
-      message: `🔒 非會員開放報名時間為【球敘前一天 22:00】後！目前僅限會員報名。` 
+      message: `🔒 18:00 ~ 22:00 為會員專屬報名時段！非會員請於晚上 22:00 後再試。` 
     });
   }
 
@@ -248,7 +274,7 @@ app.post('/api/grab', grabLimiter, async (req, res) => {
     return res.json({ success: false, message: "❌ 額滿了！正取與候補名額皆已售罄！" });
   }
 
-  // 5. 排隊非同步寫入 Google Sheet
+  // 5. 非同步排隊寫入 Google Sheet
   writeQueue.push({ dateStr, cleanEmail, userName: memberStatus.name, statusText });
   processQueue();
 

@@ -27,13 +27,13 @@ const SIGNUP_SPREADSHEET_ID = '1Mr87l1_sfIYkcArtj2ev9PkTYjN-zthzB44v1guH2cI'; //
 
 // 💡 2. 球敘場次設定
 const sessions = [
-  { id: "tue", name: "週二匹克球團", day: 2, limit: 40, waitlistLimit: 20 },
-  { id: "thu", name: "週四匹克球團", day: 4, limit: 40, waitlistLimit: 20 },
-  { id: "sat", name: "週六匹克球團", day: 6, limit: 40, waitlistLimit: 20 }
+  { id: "tue", name: "週二匹克球團", day: 2, limit: 36, waitlistLimit: 30 },
+  { id: "thu", name: "週四匹克球團", day: 4, limit: 36, waitlistLimit: 30 },
+  { id: "sat", name: "週六匹克球團", day: 6, limit: 36, waitlistLimit: 30 }
 ];
 
 // 記憶體快取名額與候補
-const seatsCache = { tue: 40, thu: 40, sat: 40 };
+const seatsCache = { tue: 36, thu: 36, sat: 36 };
 const waitlistCache = { tue: 0, thu: 0, sat: 0 };
 const registeredEmails = { tue: new Set(), thu: new Set(), sat: new Set() };
 
